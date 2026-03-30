@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Load measurement CSV (6 columns, no header), compute B = sqrt(bx^2 + by^2),
-and plot a heatmap over (x, y).
+and plot a heatmap over (x, y). Missing entries are kept and treated as 0.
 """
 
 from __future__ import annotations
@@ -20,11 +20,15 @@ def load_data(path: Path) -> tuple[np.ndarray, ...]:
     data = pd.read_csv(path, header=None, na_values=["nan"])
     if data.shape[1] < 6:
         raise ValueError(f"Expected at least 6 columns, got {data.shape[1]}")
-    data = data.dropna()
     x = data.iloc[:, 0].to_numpy(dtype=float)
     y = data.iloc[:, 1].to_numpy(dtype=float)
     bx = data.iloc[:, 2].to_numpy(dtype=float)
     by = data.iloc[:, 3].to_numpy(dtype=float)
+    # Missing values -> 0 for coordinates and field components (heatmap / B)
+    x = np.nan_to_num(x, nan=0.0)
+    y = np.nan_to_num(y, nan=0.0)
+    bx = np.nan_to_num(bx, nan=0.0)
+    by = np.nan_to_num(by, nan=0.0)
     return x, y, bx, by
 
 
