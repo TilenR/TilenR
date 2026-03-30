@@ -2,11 +2,16 @@
 """
 Load measurement CSV (6 columns, no header), compute B = sqrt(bx^2 + by^2),
 and plot a heatmap over (x, y). Missing entries are kept and treated as 0.
+
+On a regular grid, consecutive all-zero B columns from the left and rows from
+the bottom (NaN padding forming an L) are cropped so the plot origin matches
+the inner corner of that padding. Unstructured (triangulated) plots are not cropped.
 """
 
 from __future__ import annotations
 
 import argparse
+import warnings
 from pathlib import Path
 
 import matplotlib
@@ -36,6 +41,44 @@ def compute_b_magnitude(bx: np.ndarray, by: np.ndarray) -> np.ndarray:
     return np.sqrt(bx * bx + by * by)
 
 
+def crop_bottom_left_zero_padding(
+    grid: np.ndarray,
+    *,
+    atol: float = 0.0,
+) -> tuple[np.ndarray, int, int]:
+    """
+    Crop an L-shaped strip of (near-)zeros: all-zero columns from the left and
+    all-zero rows from the bottom (row 0 = bottom with origin='lower').
+
+    The inner corner of the padding (first x column and first y row that contain
+    any non-zero B) becomes the new bottom-left of the heatmap.
+
+    Returns (cropped_grid, col_start, row_start).
+    """
+    ny, nx = grid.shape
+    if atol <= 0.0:
+        nonzero = grid != 0.0
+    else:
+        nonzero = np.abs(grid) > atol
+
+    col_start = 0
+    while col_start < nx and not np.any(nonzero[:, col_start]):
+        col_start += 1
+
+    row_start = 0
+    while row_start < ny and not np.any(nonzero[row_start, :]):
+        row_start += 1
+
+    if col_start >= nx or row_start >= ny:
+        warnings.warn(
+            "B is all zero (within tolerance); skipping L-shaped zero-padding crop.",
+            stacklevel=2,
+        )
+        return grid, 0, 0
+
+    return grid[row_start:, col_start:], col_start, row_start
+
+
 def _is_regular_grid(x: np.ndarray, y: np.ndarray, rtol: float = 1e-5) -> bool:
     """True if (x,y) form a full Cartesian product of unique sorted axes."""
     ux = np.unique(x)
@@ -60,6 +103,9 @@ def plot_heatmap(
     title: str = r"$B = \sqrt{b_x^2 + b_y^2}$",
     cmap: str = "viridis",
     outfile: Path | None = None,
+    *,
+    crop_zero_padding: bool = True,
+    crop_atol: float = 0.0,
 ) -> None:
     fig, ax = plt.subplots(figsize=(8, 6))
 
@@ -67,14 +113,23 @@ def plot_heatmap(
         ux = np.sort(np.unique(x))
         uy = np.sort(np.unique(y))
         grid = b.reshape(uy.size, ux.size)
-        extent = (ux.min(), ux.max(), uy.min(), uy.max())
+        col0, row0 = 0, 0
+        if crop_zero_padding:
+            grid, col0, row0 = crop_bottom_left_zero_padding(grid, atol=crop_atol)
+        ux_plot = ux[col0 : col0 + grid.shape[1]]
+        uy_plot = uy[row0 : row0 + grid.shape[0]]
+        extent = (ux_plot.min(), ux_plot.max(), uy_plot.min(), uy_plot.max())
+        vmin, vmax = float(np.nanmin(grid)), float(np.nanmax(grid))
+        if vmin == vmax:
+            vmin -= 1e-12
+            vmax += 1e-12
         im = ax.imshow(
             grid,
             origin="lower",
             extent=extent,
             aspect="auto",
             cmap=cmap,
-            norm=Normalize(vmin=np.nanmin(b), vmax=np.nanmax(b)),
+            norm=Normalize(vmin=vmin, vmax=vmax),
         )
         ax.set_xlabel("x")
         ax.set_ylabel("y")
@@ -120,11 +175,30 @@ def main() -> None:
         default="viridis",
         help="Matplotlib colormap name (default: viridis)",
     )
+    parser.add_argument(
+        "--no-crop-padding",
+        action="store_true",
+        help="Do not crop L-shaped (bottom+left) strips where B is all zero",
+    )
+    parser.add_argument(
+        "--crop-atol",
+        type=float,
+        default=0.0,
+        help="Treat |B| <= this value as zero when detecting padding (default: 0)",
+    )
     args = parser.parse_args()
 
     x, y, bx, by = load_data(args.csv)
     b = compute_b_magnitude(bx, by)
-    plot_heatmap(x, y, b, cmap=args.cmap, outfile=args.output)
+    plot_heatmap(
+        x,
+        y,
+        b,
+        cmap=args.cmap,
+        outfile=args.output,
+        crop_zero_padding=not args.no_crop_padding,
+        crop_atol=args.crop_atol,
+    )
 
 
 if __name__ == "__main__":
